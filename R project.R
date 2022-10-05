@@ -1,0 +1,294 @@
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(GGally)
+library(tidymodels)
+library(kernlab)
+library(LiblineaR)
+library(ranger)
+options(scipen = 999)
+
+
+
+head(UsedCarsSA_Unclean_EN,5)
+
+
+View(UsedCarsSA_Unclean_EN)
+
+
+str(UsedCarsSA_Unclean_EN)
+
+
+df<- UsedCarsSA_Unclean_EN %>% filter(!grepl('Negotiable', Price))
+
+
+View(df)
+
+
+df <- select(df, -Link)
+df <- select(df, -Negotiable)
+df <- select(df, -Condition)
+
+
+df$Price <- as.numeric(gsub(",", "",df$Price))
+
+
+
+
+
+summary(df)
+
+
+df <- df[order(df$Price),]
+head(df,5)
+
+
+
+df<-df[df$Price > 5000, ]
+head(df)
+
+
+
+
+duplicated(df)
+df<-distinct(df)
+
+is.na(df)
+lapply(df,function(x) { length(which(is.na(x)))})
+
+
+df<-df[!(is.na(df$Origin) | df$Origin=="" | is.na(df$Options) |
+           df$Options==""|is.na(df$Gear_Type) | df$Gear_Type==""),]
+
+
+lapply(df,function(x) { length(which(is.na(x)))})    
+ 
+
+#that code to replace Engine_Siz with average by Type
+Engine_Size_avg <-df %>% na.omit 
+# step 1 make  another data frame contain aggregate of Engine_Size
+Engine_Size_avg <- aggregate(Engine_Size_avg[,"Engine_Size"],list(Engine_Size_avg$Type),mean)
+# step 2 marge the data frames
+df<-merge(df,Engine_Size_avg,by.x ="Type" ,by.y = "Group.1",all.x =TRUE )
+# step 3 if than Engine_Size.x null replace it with Engine_Size.y and save it in Engine_Size_m 
+df$Engine_Size_m <- ifelse(is.na(df$Engine_Size.x),df$Engine_Size.y,df$Engine_Size.x)
+# step 4 delete Engine_Size.x and Engine_Size.y in df 
+df<-df %>% select(-Engine_Size.x,-Engine_Size.y)
+df <- df %>% na.omit()
+
+
+pairplot <- df %>% subset (select = c("Year", "Engine_Size_m", "Mileage", "Price", "Options"))
+
+ggpairs(pairplot ,aes(color = Options),columns = 1:4,
+        lower = list(continuous = wrap("smooth",alpha = 0.5, size=1.4)))
+
+
+
+
+ggplot(data = df, mapping = aes(x=Options , y= Price ))+
+  geom_boxplot(fill='#4D96FF', color="#2C3333")
+df<-df[df$Price < 600000, ]
+view(df$Price)
+
+
+ggplot(df, aes(x = Price)) + 
+  geom_histogram(aes(y = ..density..),
+                 colour = 1, fill = "light blue") +
+  geom_density()+
+  facet_grid(.~Origin)
+
+
+
+carscompanies <- as.data.frame(sort(table(df$Make),decreasing=T))
+view(carscompanies)
+carscompanies <- carscompanies[1:10,]
+
+
+
+
+ggplot(data=carscompanies, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue")+
+  geom_text(aes(label=Freq), vjust=1.6, color="white", size=3.5)+
+  labs(title = "top companies in frequency ",
+       x = "Companies", y = "Frequency ")+
+  theme_minimal()
+
+
+
+
+
+
+carsType <- as.data.frame(sort(table(df$Type),decreasing=T))
+view(carsType)
+carsType <- carsType[1:10,]
+
+
+
+ggplot(data=carsType, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue")+
+  geom_text(aes(label=Freq), vjust=1.6, color="white", size=3.5)+
+  labs(title = "top cars Type in frequency ",
+       x = "Cars Type", y = "Frequency ")+
+  theme_minimal()
+
+
+
+mask=filter(df, Type =='Accent',Year == 2017)
+x=mean(mask$Price)
+paste("The price of Accent after 5 year of use ",round(x/48000*100),"% of original price")
+
+
+
+mask=filter(df, Type =='Camry',Year == 2017)
+x=mean(mask$Price)
+paste("The price Camry of after 5 year of use =",round(x/85000*100),"% of original price")
+
+
+
+mask=filter(df, Type =='Land Cruiser',Year == 2017)
+x=mean(mask$Price)
+paste("The price of Land Cruiser after 5 year of use ",round(x/235000*100),"% of original price")
+
+
+
+#--------------------------linear_reg---------------------------
+set.seed(4595)
+data_split <- initial_split(df, strata = "Price", prop = 0.90)
+
+df_train <- training(data_split)
+df_test  <- testing(data_split)
+df_train <- df_train %>% na.omit()
+df_test <- df_test %>% na.omit()
+lr_defaults <- linear_reg(mode = "regression")
+lr_defaults
+
+
+
+# preds <- c("Type", "Make", "Year", "Origin", "Color","Options",
+#            "Fuel_Type","Gear_Type","Mileage","Region","Engine_Size_m")
+
+preds <- c("Year","Mileage","Engine_Size_m")
+
+lr_xy_fit <- 
+  lr_defaults %>%
+  set_engine("lm") %>%
+  fit_xy(
+    x = df_train[, preds],
+    y = df_train$Price
+    
+  )
+
+lr_xy_fit
+
+
+test_results <- 
+  df_test %>%
+  select(Price) %>%
+  mutate(Price = Price) %>%
+  bind_cols(
+    predict(lr_xy_fit, df_test[, preds])
+  )
+
+test_results %>% slice(1:5)
+
+predict(lr_xy_fit, df_test[, preds])
+
+
+
+test_results %>% metrics(truth = Price, estimate = .pred) 
+
+#--------------------------rand_forest---------------------------
+
+set.seed(4595)
+data_split <- initial_split(df, strata = "Price", prop = 0.90)
+
+df_train <- training(data_split)
+df_test  <- testing(data_split)
+df_train <- df_train %>% na.omit()
+df_test <- df_test %>% na.omit()
+rf_defaults <- rand_forest(mode = "regression")
+rf_defaults
+
+
+
+ #preds <- c("Type", "Make", "Year", "Origin", "Color","Options",
+ #           "Fuel_Type","Gear_Type","Mileage","Region","Engine_Size_m")
+
+preds <- c("Year","Mileage","Engine_Size_m")
+
+rf_xy_fit <- 
+  rf_defaults %>%
+  set_engine("ranger") %>%
+  fit_xy(
+    x = df_train[, preds],
+    y = df_train$Price
+    
+  )
+
+rf_xy_fit
+
+
+test_results <- 
+  df_test %>%
+  select(Price) %>%
+  mutate(Price = Price) %>%
+  bind_cols(
+    predict(rf_xy_fit, df_test[, preds])
+  )
+
+test_results %>% slice(1:5)
+
+predict(rf_xy_fit, df_test[, preds])
+
+
+
+test_results %>% metrics(truth = Price, estimate = .pred) 
+
+
+#--------------------------svm_linear---------------------------
+
+set.seed(4595)
+data_split <- initial_split(df, strata = "Price", prop = 0.90)
+
+df_train <- training(data_split)
+df_test  <- testing(data_split)
+df_train <- df_train %>% na.omit()
+df_test <- df_test %>% na.omit()
+sv_defaults <- svm_linear(mode = "regression")
+sv_defaults
+
+
+
+#preds <- c("Type", "Make", "Year", "Origin", "Color","Options",
+#           "Fuel_Type","Gear_Type","Mileage","Region","Engine_Size_m")
+
+preds <- c("Year","Mileage","Engine_Size_m")
+
+sv_xy_fit <- 
+  sv_defaults %>%
+  set_engine("kernlab") %>%
+  fit_xy(
+    x = df_train[, preds],
+    y = df_train$Price
+    
+  )
+
+sv_xy_fit
+
+
+test_results <- 
+  df_test %>%
+  select(Price) %>%
+  mutate(Price = Price) %>%
+  bind_cols(
+    predict(sv_xy_fit, df_test[, preds])
+  )
+
+test_results %>% slice(1:5)
+
+predict(sv_xy_fit, df_test[, preds])
+
+
+
+test_results %>% metrics(truth = Price, estimate = .pred) 
+#---------------------------end of the code ---------------------------------
